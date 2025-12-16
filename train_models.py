@@ -1,77 +1,82 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[3]:
 
 
 import pandas as pd
+import numpy as np
 import joblib
 import os
 
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
+
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.metrics import accuracy_score
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neighbors import KNeighborsClassifier
 
 # =============================
-# 1. Cargar datos
+# CARGAR DATA
 # =============================
 df = pd.read_csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
 
 df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
-df.dropna(inplace=True)
+df = df.dropna()
+df["Churn"] = df["Churn"].map({"Yes": 1, "No": 0})
 
-X = df.drop(["Churn", "customerID"], axis=1)
-y = df["Churn"].map({"No": 0, "Yes": 1})
+X = df.drop(columns=["Churn", "customerID"])
+y = df["Churn"]
 
 # =============================
-# 2. Columnas
+# PREPROCESAMIENTO
 # =============================
 num_cols = X.select_dtypes(include=["int64", "float64"]).columns
 cat_cols = X.select_dtypes(include=["object"]).columns
 
 preprocessor = ColumnTransformer(
     transformers=[
-        ("num", "passthrough", num_cols),
+        ("num", StandardScaler(), num_cols),
         ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
     ]
 )
 
 # =============================
-# 3. Modelos
+# MODELOS
 # =============================
 modelos = {
-    "logistic": LogisticRegression(max_iter=1000),
-    "random_forest": RandomForestClassifier(n_estimators=200, random_state=42),
-    "gradient_boosting": GradientBoostingClassifier(random_state=42),
+    "logistic": LogisticRegression(max_iter=1000, class_weight="balanced"),
+    "gradient_boosting": GradientBoostingClassifier(),
+    "decision_tree": DecisionTreeClassifier(class_weight="balanced"),
+    "knn": KNeighborsClassifier()
 }
-
-# =============================
-# 4. Entrenamiento
-# =============================
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
 
 os.makedirs("models", exist_ok=True)
 
+# =============================
+# ENTRENAR Y GUARDAR
+# =============================
 for nombre, modelo in modelos.items():
-    pipe = Pipeline([
-        ("prep", preprocessor),
-        ("model", modelo)
-    ])
+    print(f"Entrenando {nombre}...")
+
+    pipe = Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            ("model", modelo)
+        ]
+    )
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, stratify=y, random_state=42
+    )
 
     pipe.fit(X_train, y_train)
 
-    y_pred = pipe.predict(X_test)
-    acc = accuracy_score(y_test, y_pred)
-
     joblib.dump(pipe, f"models/{nombre}.pkl")
+    print(f"✔ models/{nombre}.pkl guardado")
 
-    print(f"✅ {nombre}.pkl guardado | Accuracy: {acc:.3f}")
-
-print("🎉 TODOS LOS MODELOS FUERON GUARDADOS")
+print("🎉 Todos los modelos fueron generados correctamente")
 
