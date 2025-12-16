@@ -2,163 +2,149 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-import os
+import matplotlib.pyplot as plt
+import seaborn as sns
+from io import StringIO
+import warnings
+warnings.filterwarnings("ignore")
 
-# ===============================
-# CONFIGURACIÓN GENERAL
-# ===============================
+# ===================== CONFIGURACIÓN =====================
 st.set_page_config(
-    page_title="Predicción de Churn",
-    layout="wide",
-    page_icon="🤖"
+    page_title="Sistema Predicción Churn + EDA",
+    page_icon="📊",
+    layout="wide"
 )
 
-# ===============================
-# CARGA DE MODELOS (ROBUSTA)
-# ===============================
+MODELOS_PKL = {
+    "Regresión Logística": "models/logistic.pkl",
+    "Gradient Boosting": "models/gradient_boosting.pkl",
+    "Árbol de Decisión": "models/decision_tree.pkl",
+    "KNN": "models/knn.pkl",
+}
+
+VARIABLES_RELEVANTES = [
+    'Contract', 'tenure', 'MonthlyCharges', 'TotalCharges',
+    'InternetService', 'OnlineSecurity', 'TechSupport',
+    'PaymentMethod', 'PaperlessBilling', 'SeniorCitizen'
+]
+
+TODAS_VARIABLES = [
+    'gender', 'SeniorCitizen', 'Partner', 'Dependents', 'tenure',
+    'PhoneService', 'MultipleLines', 'InternetService',
+    'OnlineSecurity', 'OnlineBackup', 'DeviceProtection',
+    'TechSupport', 'StreamingTV', 'StreamingMovies',
+    'Contract', 'PaperlessBilling', 'PaymentMethod',
+    'MonthlyCharges', 'TotalCharges'
+]
+
+# ===================== CARGA MODELOS =====================
 @st.cache_resource
 def cargar_modelos():
     modelos = {}
-
-    rutas = {
-        "Regresión Logística": "models/logistic.pkl",
-        "Gradient Boosting": "models/gradient_boosting.pkl",
-    }
-
-    for nombre, ruta in rutas.items():
-        if not os.path.exists(ruta):
-            st.warning(f"⚠️ Archivo no encontrado: {ruta}")
-            continue
-
-        try:
-            modelos[nombre] = joblib.load(ruta)
-        except Exception:
-            st.warning(
-                f"⚠️ No se pudo cargar {nombre} "
-                f"(incompatibilidad de versiones)."
-            )
-
-    if not modelos:
-        st.error("❌ No se pudo cargar ningún modelo.")
-        st.stop()
-
+    for nombre, ruta in MODELOS_PKL.items():
+        modelos[nombre] = joblib.load(ruta)
     return modelos
 
-
-# ===============================
-# CARGA DE DATOS
-# ===============================
+# ===================== CARGA DATOS =====================
 @st.cache_data
 def cargar_datos():
-    return pd.read_csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
-
-
-# ===============================
-# EDA
-# ===============================
-def seccion_eda():
-    st.header("📊 Análisis Exploratorio de Datos (EDA)")
-
-    df = cargar_datos()
-
-    st.subheader("Vista previa del dataset")
-    st.dataframe(df.head())
-
-    st.subheader("Distribución de Churn")
-    churn_counts = df["Churn"].value_counts()
-    st.bar_chart(churn_counts)
-
-    st.subheader("Resumen estadístico")
-    st.write(df.describe())
-
-
-# ===============================
-# PREPROCESAMIENTO SIMPLE
-# ===============================
-def preparar_input(datos):
-    df = pd.DataFrame([datos])
-
-    # Conversión básica
-    df["SeniorCitizen"] = df["SeniorCitizen"].astype(int)
-    df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce").fillna(0)
-
-    # One-hot encoding
-    df = pd.get_dummies(df)
-
+    df = pd.read_csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
+    df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
+    df = df.dropna()
     return df
 
+# ===================== EDA =====================
+def seccion_eda(df):
+    st.header("📊 Análisis Exploratorio de Datos")
+    st.dataframe(df.head(), use_container_width=True)
 
-# ===============================
-# PREDICCIÓN INDIVIDUAL
-# ===============================
-def seccion_prediccion():
-    st.header("🤖 Predicción Individual de Churn")
+    if "Churn" in df.columns:
+        churn_rate = (df["Churn"] == "Yes").mean() * 100
+        st.metric("Tasa de Churn", f"{churn_rate:.2f}%")
 
-    modelos = cargar_modelos()
+    numeric_df = df.select_dtypes(include=np.number)
+    if len(numeric_df.columns) > 1:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.heatmap(numeric_df.corr(), cmap="coolwarm", ax=ax)
+        st.pyplot(fig)
 
-    modelo_seleccionado = st.selectbox(
-        "Seleccione el modelo",
-        list(modelos.keys())
+# ===================== PREDICCIÓN =====================
+def seccion_prediccion(df, modelos):
+    st.header("🔮 Predicción Individual de Churn")
+
+    usar_todas = st.radio(
+        "Variables a usar:",
+        ["Variables Relevantes", "Todas las Variables"]
+    ) == "Todas las Variables"
+
+    variables = TODAS_VARIABLES if usar_todas else VARIABLES_RELEVANTES
+    variables = [v for v in variables if v in df.columns]
+
+    datos_cliente = {}
+    col1, col2 = st.columns(2)
+
+    for i, var in enumerate(variables):
+        with col1 if i % 2 == 0 else col2:
+            if df[var].dtype == "object":
+                datos_cliente[var] = st.selectbox(var, df[var].unique())
+            else:
+                datos_cliente[var] = st.number_input(
+                    var, value=float(df[var].median())
+                )
+
+    modelos_seleccionados = st.multiselect(
+        "Modelos a evaluar:",
+        list(modelos.keys()),
+        default=list(modelos.keys())
     )
 
-    st.subheader("Ingrese los datos del cliente")
+    if st.button("🚀 Predecir"):
+        cliente_df = pd.DataFrame([datos_cliente])
+        resultados = {}
 
-    genero = st.selectbox("Género", ["Male", "Female"])
-    senior = st.selectbox("Senior Citizen", [0, 1])
-    pareja = st.selectbox("Tiene pareja", ["Yes", "No"])
-    dependientes = st.selectbox("Tiene dependientes", ["Yes", "No"])
-    tenure = st.slider("Meses de permanencia", 0, 72, 12)
-    monthly = st.number_input("Cargo mensual", 0.0, 200.0, 70.0)
-    total = st.number_input("Total facturado", 0.0, 10000.0, 1000.0)
+        for nombre in modelos_seleccionados:
+            modelo = modelos[nombre]
 
-    if st.button("🔮 Predecir Churn"):
-        datos = {
-            "gender": genero,
-            "SeniorCitizen": senior,
-            "Partner": pareja,
-            "Dependents": dependientes,
-            "tenure": tenure,
-            "MonthlyCharges": monthly,
-            "TotalCharges": total,
-        }
-
-        X = preparar_input(datos)
-        modelo = modelos[modelo_seleccionado]
-
-        # Alinear columnas si el modelo fue entrenado con más features
-        if hasattr(modelo, "feature_names_in_"):
             for col in modelo.feature_names_in_:
-                if col not in X.columns:
-                    X[col] = 0
-            X = X[modelo.feature_names_in_]
+                if col not in cliente_df.columns:
+                    cliente_df[col] = df[col].mode()[0]
 
-        pred = modelo.predict(X)[0]
+            cliente_df = cliente_df[modelo.feature_names_in_]
 
-        if hasattr(modelo, "predict_proba"):
-            proba = modelo.predict_proba(X)[0][1]
-            st.info(f"📈 Probabilidad de Churn: {proba:.2%}")
+            proba = modelo.predict_proba(cliente_df)[0, 1]
+            pred = "CHURN" if proba >= 0.5 else "NO CHURN"
 
-        if pred == 1 or pred == "Yes":
-            st.error("❌ El cliente probablemente abandonará (Churn)")
-        else:
-            st.success("✅ El cliente probablemente NO abandonará")
+            resultados[nombre] = proba
 
+            st.metric(
+                nombre,
+                pred,
+                f"{proba:.1%}"
+            )
 
-# ===============================
-# NAVEGACIÓN PRINCIPAL
-# ===============================
+        st.markdown("---")
+        st.subheader("📊 Consenso")
+        st.metric(
+            "Probabilidad promedio",
+            f"{np.mean(list(resultados.values())):.1%}"
+        )
+
+# ===================== MAIN =====================
 def main():
-    st.sidebar.title("🧭 Navegación")
+    st.title("📱 Sistema de Predicción de Churn")
+
+    df = cargar_datos()
+    modelos = cargar_modelos()
+
     seccion = st.sidebar.radio(
-        "Seleccione sección:",
+        "🧭 Navegación",
         ["EDA", "Predicción"]
     )
 
     if seccion == "EDA":
-        seccion_eda()
+        seccion_eda(df)
     else:
-        seccion_prediccion()
-
+        seccion_prediccion(df, modelos)
 
 if __name__ == "__main__":
     main()
