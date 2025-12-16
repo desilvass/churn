@@ -1,214 +1,164 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
-# =====================================
-# IMPORTS
-# =====================================
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import joblib
-from io import StringIO
-import warnings
-warnings.filterwarnings("ignore")
+import os
 
-# =====================================
-# CONFIGURACIÓN
-# =====================================
+# ===============================
+# CONFIGURACIÓN GENERAL
+# ===============================
 st.set_page_config(
-    page_title="Sistema Predicción Churn + EDA",
-    page_icon="📊",
+    page_title="Predicción de Churn",
     layout="wide",
-    initial_sidebar_state="expanded"
+    page_icon="🤖"
 )
 
-# =====================================
-# CARGA DE MODELOS
-# =====================================
+# ===============================
+# CARGA DE MODELOS (ROBUSTA)
+# ===============================
 @st.cache_resource
 def cargar_modelos():
-    modelos = {
-        "Regresión Logística": joblib.load("models/logistic.pkl"),
-        "Random Forest": joblib.load("models/random_forest.pkl"),
-        "Gradient Boosting": joblib.load("models/gradient_boosting.pkl"),
+    modelos = {}
+
+    rutas = {
+        "Regresión Logística": "models/logistic.pkl",
+        "Gradient Boosting": "models/gradient_boosting.pkl",
     }
+
+    for nombre, ruta in rutas.items():
+        if not os.path.exists(ruta):
+            st.warning(f"⚠️ Archivo no encontrado: {ruta}")
+            continue
+
+        try:
+            modelos[nombre] = joblib.load(ruta)
+        except Exception:
+            st.warning(
+                f"⚠️ No se pudo cargar {nombre} "
+                f"(incompatibilidad de versiones)."
+            )
+
+    if not modelos:
+        st.error("❌ No se pudo cargar ningún modelo.")
+        st.stop()
+
     return modelos
 
-# =====================================
+
+# ===============================
 # CARGA DE DATOS
-# =====================================
+# ===============================
 @st.cache_data
 def cargar_datos():
     return pd.read_csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
 
-# =====================================
-# SECCIÓN EDA
-# =====================================
-def seccion_eda(df):
 
-    st.header("📊 ANÁLISIS EXPLORATORIO DE DATOS")
+# ===============================
+# EDA
+# ===============================
+def seccion_eda():
+    st.header("📊 Análisis Exploratorio de Datos (EDA)")
 
-    tab1, tab2, tab3 = st.tabs(
-        ["📋 Vista General", "📈 Distribuciones", "🎯 Churn"]
-    )
+    df = cargar_datos()
 
-    # ---- TAB 1
-    with tab1:
-        with st.container():
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total registros", len(df))
-            with col2:
-                churn_rate = (df["Churn"] == "Yes").mean() * 100
-                st.metric("Tasa churn", f"{churn_rate:.1f}%")
+    st.subheader("Vista previa del dataset")
+    st.dataframe(df.head())
 
-            buffer = StringIO()
-            df.info(buf=buffer)
-            st.text_area(
-                "Información del Dataset",
-                buffer.getvalue(),
-                height=230,
-                key="eda_info"
-            )
+    st.subheader("Distribución de Churn")
+    churn_counts = df["Churn"].value_counts()
+    st.bar_chart(churn_counts)
 
-    # ---- TAB 2
-    with tab2:
-        with st.container():
-            variable = st.selectbox(
-                "Selecciona variable",
-                [c for c in df.columns if c != "customerID"],
-                key="eda_variable"
-            )
+    st.subheader("Resumen estadístico")
+    st.write(df.describe())
 
-            fig, ax = plt.subplots(figsize=(9,5))
-            if df[variable].dtype != "object":
-                df[variable].hist(ax=ax, bins=30)
-            else:
-                df[variable].value_counts().head(10).plot.bar(ax=ax)
 
-            ax.set_title(f"Distribución de {variable}")
-            st.pyplot(fig, clear_figure=True)
+# ===============================
+# PREPROCESAMIENTO SIMPLE
+# ===============================
+def preparar_input(datos):
+    df = pd.DataFrame([datos])
 
-    # ---- TAB 3
-    with tab3:
-        with st.container():
-            var = st.selectbox(
-                "Analizar churn por",
-                [c for c in df.columns if c not in ["customerID", "Churn"]],
-                key="eda_churn_var"
-            )
+    # Conversión básica
+    df["SeniorCitizen"] = df["SeniorCitizen"].astype(int)
+    df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce").fillna(0)
 
-            ct = pd.crosstab(df[var], df["Churn"], normalize="index") * 100
-            fig, ax = plt.subplots(figsize=(10,5))
-            ct.plot(kind="bar", stacked=True, ax=ax)
-            ax.set_ylabel("Porcentaje (%)")
-            ax.set_title(f"Tasa de Churn por {var}")
-            st.pyplot(fig, clear_figure=True)
+    # One-hot encoding
+    df = pd.get_dummies(df)
 
-# =====================================
-# SECCIÓN PREDICCIÓN
-# =====================================
+    return df
+
+
+# ===============================
+# PREDICCIÓN INDIVIDUAL
+# ===============================
 def seccion_prediccion():
-
     st.header("🤖 Predicción Individual de Churn")
 
     modelos = cargar_modelos()
 
-    datos = {}
-    col1, col2 = st.columns(2)
+    modelo_seleccionado = st.selectbox(
+        "Seleccione el modelo",
+        list(modelos.keys())
+    )
 
-    with col1:
-        datos["Contract"] = st.selectbox(
-            "Contrato",
-            ["Month-to-month", "One year", "Two year"],
-            key="pred_contract"
-        )
-        datos["tenure"] = st.number_input(
-            "Antigüedad (meses)",
-            0, 100, 12,
-            key="pred_tenure"
-        )
-        datos["MonthlyCharges"] = st.number_input(
-            "Cargos mensuales ($)",
-            0.0, 200.0, 50.0,
-            key="pred_charges"
-        )
+    st.subheader("Ingrese los datos del cliente")
 
-    with col2:
-        datos["PaymentMethod"] = st.selectbox(
-            "Método de pago",
-            [
-                "Electronic check",
-                "Mailed check",
-                "Bank transfer (automatic)",
-                "Credit card (automatic)"
-            ],
-            key="pred_payment"
-        )
-        datos["OnlineSecurity"] = st.selectbox(
-            "Seguridad online",
-            ["Yes", "No"],
-            key="pred_security"
-        )
-        datos["TechSupport"] = st.selectbox(
-            "Soporte técnico",
-            ["Yes", "No"],
-            key="pred_support"
-        )
+    genero = st.selectbox("Género", ["Male", "Female"])
+    senior = st.selectbox("Senior Citizen", [0, 1])
+    pareja = st.selectbox("Tiene pareja", ["Yes", "No"])
+    dependientes = st.selectbox("Tiene dependientes", ["Yes", "No"])
+    tenure = st.slider("Meses de permanencia", 0, 72, 12)
+    monthly = st.number_input("Cargo mensual", 0.0, 200.0, 70.0)
+    total = st.number_input("Total facturado", 0.0, 10000.0, 1000.0)
 
-    if st.button("🔮 PREDECIR CHURN", key="pred_button"):
+    if st.button("🔮 Predecir Churn"):
+        datos = {
+            "gender": genero,
+            "SeniorCitizen": senior,
+            "Partner": pareja,
+            "Dependents": dependientes,
+            "tenure": tenure,
+            "MonthlyCharges": monthly,
+            "TotalCharges": total,
+        }
 
-        X = pd.DataFrame([datos])
+        X = preparar_input(datos)
+        modelo = modelos[modelo_seleccionado]
 
-        resultados = {}
-        for nombre, modelo in modelos.items():
-            prob = modelo.predict_proba(X)[0][1]
-            resultados[nombre] = prob
+        # Alinear columnas si el modelo fue entrenado con más features
+        if hasattr(modelo, "feature_names_in_"):
+            for col in modelo.feature_names_in_:
+                if col not in X.columns:
+                    X[col] = 0
+            X = X[modelo.feature_names_in_]
 
-        prob_media = np.mean(list(resultados.values()))
-        riesgo = int(prob_media * 100)
+        pred = modelo.predict(X)[0]
 
-        st.markdown("---")
-        st.subheader("📊 Resultados por modelo")
+        if hasattr(modelo, "predict_proba"):
+            proba = modelo.predict_proba(X)[0][1]
+            st.info(f"📈 Probabilidad de Churn: {proba:.2%}")
 
-        cols = st.columns(len(resultados))
-        for col, (nombre, prob) in zip(cols, resultados.items()):
-            with col:
-                st.metric(nombre, f"{prob:.1%}")
-
-        st.markdown("---")
-        st.metric("Riesgo promedio de churn", f"{riesgo}/100")
-
-        if riesgo > 70:
-            st.error("🚨 Alto riesgo de churn")
-        elif riesgo > 50:
-            st.warning("⚠️ Riesgo medio de churn")
+        if pred == 1 or pred == "Yes":
+            st.error("❌ El cliente probablemente abandonará (Churn)")
         else:
-            st.success("✅ Riesgo bajo de churn")
+            st.success("✅ El cliente probablemente NO abandonará")
 
-# =====================================
-# MAIN
-# =====================================
+
+# ===============================
+# NAVEGACIÓN PRINCIPAL
+# ===============================
 def main():
-
-    df = cargar_datos()
-
     st.sidebar.title("🧭 Navegación")
     seccion = st.sidebar.radio(
         "Seleccione sección:",
-        ["EDA", "Predicción"],
-        key="sidebar_nav"
+        ["EDA", "Predicción"]
     )
 
     if seccion == "EDA":
-        seccion_eda(df)
+        seccion_eda()
     else:
         seccion_prediccion()
 
+
 if __name__ == "__main__":
     main()
-
